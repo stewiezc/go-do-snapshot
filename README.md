@@ -41,5 +41,5 @@ Delete all snapshots by setting k to 0. No snapshot will be taken.
 ## Crontab
 ```
 # weekly snapshot on Sunday at 1am with transfer to NYC3, keeping 3 snapshots
-0 1 * * 0 /usr/local/bin/go-do-snapshot -d NYC3 -k 3
+0 1 * * 0 /usr/local/bin/go-do-snapshot -d NYC3 -k 3 2>&1 | logger -t "go-do-snapshot"
 ```
