@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -126,14 +128,22 @@ type DoImagesResp struct {
 	} `json:"action"`
 }
 
+// SnapshotList - list of matching snapshots for cleanup
+type SnapshotList struct {
+	Name      string
+	ID        int
+	CreatedAt time.Time
+}
+
 func main() {
 	// discover flags
 	flag.Var(&snapDest, "d", "Snapshot destination")
+	snapKeep := flag.Int("k", -1, "Number of snapshots to keep")
 	flag.Parse()
 
-	if len(snapDest) == 0 {
-		log.Fatal("You must define at least one snapshot destination '-d'")
-	}
+	//if len(snapDest) == 0 {
+	//	log.Fatal("You must define at least one snapshot destination '-d'")
+	//}
 
 	// discover env variables
 	doToken := os.Getenv("DO_TOKEN")
@@ -149,6 +159,12 @@ func main() {
 	currentTime := time.Now()
 	timestamp := currentTime.Format("200601021504")
 	snapshotName := fmt.Sprintf("autogds-%v-%v", dropletID, timestamp)
+	snapshotBaseName := fmt.Sprintf("autogds-%v", dropletID)
+
+	if *snapKeep == 0 {
+		cleanSnapshots(doToken, *snapKeep, snapshotBaseName)
+		os.Exit(0)
+	}
 
 	fmt.Println("Taking snapshot", snapshotName, "of droplet ID", dropletID)
 	takeSnapshot(doToken, dropletID, snapshotName)
@@ -161,6 +177,10 @@ func main() {
 	for i := 0; i < len(snapDest); i++ {
 		fmt.Println("Transferring", snapshotName, "with ID", snapshotID, "to", snapDest[i])
 		transferSnapshot(doToken, snapshotID, snapDest[i])
+	}
+
+	if *snapKeep != -1 {
+		cleanSnapshots(doToken, *snapKeep, snapshotBaseName)
 	}
 }
 
@@ -221,7 +241,7 @@ func takeSnapshot(doToken string, dropletID int, snapshotName string) int {
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 	} else {
 		fmt.Println("Response:", resp)
-		fmt.Println("Failed! Response code:", resp.StatusCode)
+		fmt.Println("Failed! Status code:", resp.StatusCode)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -252,7 +272,7 @@ func takeSnapshot(doToken string, dropletID int, snapshotName string) int {
 			done = true
 		} else if status == "in-progress" {
 			fmt.Println("In progress...")
-			time.Sleep(120 * time.Second)
+			time.Sleep(30 * time.Second)
 		}
 	}
 	return 0
@@ -274,6 +294,12 @@ func getActionStatus(doToken string, ID int, actionID int, api string) string {
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+	} else {
+		fmt.Println("Response:", resp)
+		fmt.Println("Failed! Status code:", resp.StatusCode)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -337,6 +363,12 @@ func getSnapshotPage(doToken string, page int) DoSnapshots {
 		log.Fatal(err)
 	}
 
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+	} else {
+		fmt.Println("Response:", resp)
+		fmt.Println("Failed! Status code:", resp.StatusCode)
+	}
+
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		log.Fatal("Error parsing Digital Ocean API response body:", err)
@@ -384,7 +416,7 @@ func transferSnapshot(doToken string, snapshotID int, destination string) int {
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 	} else {
 		fmt.Println("Response:", resp)
-		fmt.Println("Failed! Response code:", resp.StatusCode)
+		fmt.Println("Failed! Status code:", resp.StatusCode)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
@@ -415,8 +447,93 @@ func transferSnapshot(doToken string, snapshotID int, destination string) int {
 			done = true
 		} else if status == "in-progress" {
 			fmt.Println("In progress...")
-			time.Sleep(300 * time.Second)
+			time.Sleep(30 * time.Second)
 		}
 	}
 	return 0
+}
+
+func cleanSnapshots(doToken string, snapKeep int, snapshotBaseName string) {
+	// clean up old snapshots
+	snapMatch := fmt.Sprintf("^%v", snapshotBaseName)
+	r, _ := regexp.Compile(snapMatch)
+
+	page1 := getSnapshotPage(doToken, 1)
+
+	matchedSnapshots := []*SnapshotList{}
+	newMatched := new(SnapshotList)
+
+	// see if any matching snapshots are in page1
+	for i := 0; i < len(page1.Snapshots); i++ {
+		if r.MatchString(page1.Snapshots[i].Name) {
+			// add snapshot info to struct
+			newMatched = new(SnapshotList)
+			newMatched.Name = page1.Snapshots[i].Name
+			newMatched.ID = page1.Snapshots[i].ID
+			newMatched.CreatedAt = page1.Snapshots[i].CreatedAt
+			matchedSnapshots = append(matchedSnapshots, newMatched)
+		}
+	}
+	if page1.Links.Pages.Next != "" {
+		done := false
+		for p := 2; !done; p++ {
+			page := getSnapshotPage(doToken, p)
+			for i := 0; i < len(page.Snapshots); i++ {
+				if r.MatchString(page.Snapshots[i].Name) {
+					// add snapthot info to struct
+					newMatched = new(SnapshotList)
+					newMatched.Name = page.Snapshots[i].Name
+					newMatched.ID = page.Snapshots[i].ID
+					newMatched.CreatedAt = page.Snapshots[i].CreatedAt
+					matchedSnapshots = append(matchedSnapshots, newMatched)
+				}
+			}
+			if page.Links.Pages.Next == "" {
+				done = true
+			}
+		}
+	}
+
+	counter := 0
+	for i := 0; i < len(matchedSnapshots); i++ {
+		counter++
+	}
+
+	sort.Slice(matchedSnapshots, func(i, j int) bool {
+		return matchedSnapshots[i].CreatedAt.After(matchedSnapshots[j].CreatedAt)
+	})
+
+	if counter > snapKeep {
+		for i := snapKeep; i < len(matchedSnapshots); i++ {
+			fmt.Println("Deleting snapshot", matchedSnapshots[i].Name)
+			deleteSnapshot(doToken, matchedSnapshots[i].ID)
+		}
+	}
+	return
+}
+
+func deleteSnapshot(doToken string, snapshotID int) {
+	// deletes a snapshot
+	doAPIuri := fmt.Sprintf("https://api.digitalocean.com/v2/snapshots/%v", snapshotID)
+	client := &http.Client{}
+
+	req, err := http.NewRequest("DELETE", doAPIuri, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	authHeader := fmt.Sprintf("Bearer %v", doToken)
+	req.Header.Add("Authorization", authHeader)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if resp.StatusCode == 204 {
+		fmt.Println("Successfully requested snapshot deletion for snapshot ID", snapshotID)
+	} else {
+		fmt.Println("Failed! Status code:", resp.StatusCode)
+	}
 }
