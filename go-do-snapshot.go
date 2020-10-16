@@ -78,7 +78,7 @@ type DoSnapshotStatus struct {
 // DoSnapshots - the response for listing all snapshots
 type DoSnapshots struct {
 	Snapshots []struct {
-		ID            int           `json:"id"`
+		ID            int           `json:"id,string"`
 		Name          string        `json:"name"`
 		Regions       []string      `json:"regions"`
 		CreatedAt     time.Time     `json:"created_at"`
@@ -97,6 +97,33 @@ type DoSnapshots struct {
 	Meta struct {
 		Total int `json:"total"`
 	} `json:"meta"`
+}
+
+// DoImagesRequest - The request body when calling Digital Ocean Images Actions API
+type DoImagesRequest struct {
+	Type   string `json:"type"`
+	Region string `json:"region"`
+}
+
+// DoImagesResp - The response from the Digital Ocean Images Actions API
+type DoImagesResp struct {
+	Action struct {
+		ID           int         `json:"id"`
+		Status       string      `json:"status"`
+		Type         string      `json:"type"`
+		StartedAt    time.Time   `json:"started_at"`
+		CompletedAt  interface{} `json:"completed_at"`
+		ResourceID   int         `json:"resource_id"`
+		ResourceType string      `json:"resource_type"`
+		Region       struct {
+			Name      string   `json:"name"`
+			Slug      string   `json:"slug"`
+			Sizes     []string `json:"sizes"`
+			Features  []string `json:"features"`
+			Available bool     `json:"available"`
+		} `json:"region"`
+		RegionSlug string `json:"region_slug"`
+	} `json:"action"`
 }
 
 func main() {
@@ -123,13 +150,16 @@ func main() {
 	timestamp := currentTime.Format("200601021504")
 	snapshotName := fmt.Sprintf("autogds-%v-%v", dropletID, timestamp)
 
+	fmt.Println("Taking snapshot", snapshotName, "of droplet ID", dropletID)
 	takeSnapshot(doToken, dropletID, snapshotName)
+	fmt.Println("Discovering snapshot ID...")
 	snapshotID := getSnapshotID(doToken, snapshotName)
 	if snapshotID == 0 {
 		log.Fatal("ERROR finding snapshot")
 	}
 
 	for i := 0; i < len(snapDest); i++ {
+		fmt.Println("Transferring", snapshotName, "with ID", snapshotID, "to", snapDest[i])
 		transferSnapshot(doToken, snapshotID, snapDest[i])
 	}
 }
@@ -222,7 +252,7 @@ func takeSnapshot(doToken string, dropletID int, snapshotName string) int {
 			done = true
 		} else if status == "in-progress" {
 			fmt.Println("In progress...")
-			time.Sleep(900 * time.Second)
+			time.Sleep(120 * time.Second)
 		}
 	}
 	return 0
@@ -323,6 +353,70 @@ func getSnapshotPage(doToken string, page int) DoSnapshots {
 
 func transferSnapshot(doToken string, snapshotID int, destination string) int {
 	// transfer the snapshot to specified destination
+	client := &http.Client{}
+	uri := fmt.Sprintf("https://api.digitalocean.com/v2/images/%v/actions", snapshotID)
 
+	requestBody := DoImagesRequest{
+		Type:   "transfer",
+		Region: destination,
+	}
+
+	reqBody, err := json.Marshal(requestBody)
+	if err != nil {
+		fmt.Println(err)
+	}
+	u := bytes.NewReader(reqBody)
+
+	req, err := http.NewRequest("POST", uri, u)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	authHeader := fmt.Sprintf("Bearer %v", doToken)
+	req.Header.Add("Authorization", authHeader)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+	} else {
+		fmt.Println("Response:", resp)
+		fmt.Println("Failed! Response code:", resp.StatusCode)
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal("Error parsing Digital Ocean API response body:", err)
+	}
+
+	var doImagesResp DoImagesResp
+	jsonErr := json.Unmarshal(body, &doImagesResp)
+	if jsonErr != nil {
+		log.Fatal(jsonErr)
+	}
+
+	actionID := doImagesResp.Action.ID
+
+	for done := false; !done; {
+		fmt.Println("Checking status...")
+		status := getActionStatus(doToken, snapshotID, actionID, "images")
+
+		if status == "" {
+			log.Fatal("Error: Unable to retrieve status")
+		}
+
+		if status == "errored" {
+			log.Fatal("Error transferring Snapshot")
+		} else if status == "completed" {
+			fmt.Println("Snapshot transferred successfully!")
+			done = true
+		} else if status == "in-progress" {
+			fmt.Println("In progress...")
+			time.Sleep(300 * time.Second)
+		}
+	}
 	return 0
 }
