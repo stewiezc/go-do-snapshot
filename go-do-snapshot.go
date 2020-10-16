@@ -272,7 +272,7 @@ func takeSnapshot(doToken string, dropletID int, snapshotName string) int {
 			done = true
 		} else if status == "in-progress" {
 			fmt.Println("In progress...")
-			time.Sleep(30 * time.Second)
+			time.Sleep(300 * time.Second)
 		}
 	}
 	return 0
@@ -447,7 +447,7 @@ func transferSnapshot(doToken string, snapshotID int, destination string) int {
 			done = true
 		} else if status == "in-progress" {
 			fmt.Println("In progress...")
-			time.Sleep(30 * time.Second)
+			time.Sleep(300 * time.Second)
 		}
 	}
 	return 0
